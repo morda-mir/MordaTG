@@ -75,7 +75,7 @@ jobs:
           VERSION_NAME=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
           SHA256=$(sha256sum release-assets/MordaTG.apk | cut -d' ' -f1)
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          CHANGELOG=${INPUT_CHANGELOG:-$(git log -1 --pretty=%B)}
+          CHANGELOG="${INPUT_CHANGELOG:-Первый выпуск.}"
           MINIMUM=${INPUT_MINIMUM:-1}
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/MordaTG.apk"
           jq -n \
