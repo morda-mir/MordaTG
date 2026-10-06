@@ -100,8 +100,6 @@ class ProxyService : Service() {
                 .map {
                     NotificationState(
                         status = it.status,
-                        activeConnections = it.activeConnections,
-                        lastDc = it.lastDc,
                         listenPort = it.listenPort,
                         portChangedFrom = it.portChangedFrom,
                     )
@@ -112,11 +110,7 @@ class ProxyService : Service() {
                         state.portChangedFrom != null -> "Порт изменён на ${state.listenPort} · обновите Telegram"
                         state.status == ProxyStatus.STARTING -> "Запуск локального прокси…"
                         state.status == ProxyStatus.LISTENING -> "Telegram через прокси · ожидание"
-                        state.status == ProxyStatus.CONNECTED -> buildString {
-                            append("Telegram через прокси")
-                            if (state.lastDc != null) append(" · DC").append(state.lastDc)
-                            if (state.activeConnections > 0) append(" · ").append(state.activeConnections)
-                        }
+                        state.status == ProxyStatus.CONNECTED -> "Telegram через прокси"
                         state.status == ProxyStatus.WAITING_FOR_NETWORK -> "Ожидание сети"
                         state.status == ProxyStatus.ERROR -> "Ошибка запуска прокси"
                         else -> "Прокси остановлен"
@@ -251,8 +245,6 @@ class ProxyService : Service() {
 
     private data class NotificationState(
         val status: ProxyStatus,
-        val activeConnections: Int,
-        val lastDc: Int?,
         val listenPort: Int,
         val portChangedFrom: Int?,
     )

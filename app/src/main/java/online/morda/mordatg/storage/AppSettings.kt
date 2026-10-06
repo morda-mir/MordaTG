@@ -37,7 +37,9 @@ class AppSettings(context: Context) {
                 }
             }
         }
-        set(value) = preferences.edit().putInt(KEY_LISTEN_PORT, value).apply()
+        set(value) {
+            preferences.edit().putInt(KEY_LISTEN_PORT, value).commit()
+        }
 
     var telegramPort: Int
         get() = preferences.getInt(KEY_TELEGRAM_PORT, 0).takeIf { it in 1..65535 } ?: 0

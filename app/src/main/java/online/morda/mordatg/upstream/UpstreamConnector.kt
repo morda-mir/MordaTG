@@ -5,10 +5,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runInterruptible
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 class UpstreamConnector(
     private val onReconnect: () -> Unit,
-    private val backoff: ExponentialBackoff = ExponentialBackoff(),
+    private val backoff: ExponentialBackoff = ExponentialBackoff(
+        initialMs = 100,
+        maximumMs = 500,
+        jitterRatio = 0.2,
+    ),
 ) {
     private val directTargets = mapOf(
         2 to "149.154.167.220",
@@ -16,7 +21,11 @@ class UpstreamConnector(
     )
 
     suspend fun connect(route: TelegramRoute): RawWebSocket {
-        val candidates = candidateEndpoints(route)
+        val routeKey = "${route.dcId}:${route.media}"
+        val candidates = buildList {
+            lastSuccessfulEndpoints[routeKey]?.let(::add)
+            addAll(candidateEndpoints(route))
+        }.distinctBy { it.tlsHost }
 
         var lastError: Throwable? = null
         val attempts = candidates.take(MAX_ENDPOINT_ATTEMPTS)
@@ -26,9 +35,11 @@ class UpstreamConnector(
                 delay(backoff.delayMs((index - 1).coerceAtMost(4)))
             }
             try {
-                return runInterruptible(Dispatchers.IO) {
+                val socket = runInterruptible(Dispatchers.IO) {
                     RawWebSocket.connect(endpoint.connectHost, endpoint.tlsHost, endpoint.path)
                 }
+                lastSuccessfulEndpoints[routeKey] = endpoint
+                return socket
             } catch (error: Throwable) {
                 lastError = error
                 Log.w(
@@ -55,13 +66,14 @@ class UpstreamConnector(
     internal data class Endpoint(val connectHost: String, val tlsHost: String, val path: String)
 
     companion object {
-        private const val MAX_ENDPOINT_ATTEMPTS = 6
+        private const val MAX_ENDPOINT_ATTEMPTS = 8
+        private val lastSuccessfulEndpoints = ConcurrentHashMap<String, Endpoint>()
 
         // Compatibility pool embedded by Flowseal/tg-ws-proxy v1.10.4.
         private val CF_PROXY_DOMAINS = listOf(
-            "pclead.co.uk",
             "offshor.co.uk",
             "cakeisalie.co.uk",
+            "pclead.co.uk",
             "noskomnadzor.co.uk",
             "lovetrue.co.uk",
             "sorokdva.co.uk",

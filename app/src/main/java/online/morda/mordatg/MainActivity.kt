@@ -352,14 +352,7 @@ private fun StatusField(snapshot: ProxySnapshot, onToggle: () -> Unit) {
         ProxyStatus.WAITING_FOR_NETWORK -> "Ожидание сети"
         ProxyStatus.ERROR -> "Не удалось запустить"
     }
-    val description = when (snapshot.status) {
-        ProxyStatus.STOPPED -> null
-        ProxyStatus.STARTING -> null
-        ProxyStatus.LISTENING -> null
-        ProxyStatus.CONNECTED -> "Активных соединений: ${snapshot.activeConnections}${snapshot.lastDc?.let { " · DC$it" }.orEmpty()}"
-        ProxyStatus.WAITING_FOR_NETWORK -> null
-        ProxyStatus.ERROR -> snapshot.lastError ?: "Попробуйте ещё раз"
-    }
+    val description = snapshot.lastError.takeIf { snapshot.status == ProxyStatus.ERROR }
     val container = if (snapshot.status == ProxyStatus.ERROR) {
         MaterialTheme.colorScheme.errorContainer
     } else {
@@ -479,12 +472,6 @@ private fun Diagnostics(snapshot: ProxySnapshot) {
             Metric("Получено", formatBytes(snapshot.bytesReceived), Modifier.weight(1f))
             Metric("Время", formatDuration(uptime), Modifier.weight(1f))
         }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Соединений: ${snapshot.activeConnections} · переподключений: ${snapshot.reconnects}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
