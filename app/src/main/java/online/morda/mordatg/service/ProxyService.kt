@@ -57,8 +57,17 @@ class ProxyService : Service() {
         if (proxyServer != null) return
         val settings = AppSettings(this)
         settings.desiredEnabled = true
-        val preferredPort = settings.listenPort
-        val server = SocksProxyServer(preferredPort = preferredPort)
+        val telegramPort = settings.telegramPort
+        val preferredPort = telegramPort.takeIf { it != 0 } ?: settings.listenPort
+        if (telegramPort != 0) {
+            settings.listenPort = preferredPort
+            settings.pendingPortChangeFrom = 0
+            ProxyRuntimeState.portSharedWithTelegram()
+        }
+        val server = SocksProxyServer(
+            preferredPort = preferredPort,
+            allowPortFallback = telegramPort == 0,
+        )
         proxyServer = server
         networkMonitor = NetworkMonitor(this) { available ->
             val wasAvailable = ProxyRuntimeState.state.value.networkAvailable
@@ -68,9 +77,6 @@ class ProxyService : Service() {
         serviceScope.launch {
             runCatching { server.start() }
                 .onSuccess { selectedPort ->
-                    if (selectedPort != preferredPort && settings.telegramPort == preferredPort) {
-                        settings.pendingPortChangeFrom = preferredPort
-                    }
                     settings.listenPort = selectedPort
                     settings.pendingPortChangeFrom.takeIf { it != 0 && it != selectedPort }
                         ?.let(ProxyRuntimeState::portChanged)

@@ -52,4 +52,23 @@ class ProxyConstantsTest {
             }
         }
     }
+
+    @Test
+    fun `server keeps configured port when it is occupied`() = runBlocking {
+        val loopback = InetAddress.getByName(ProxyConstants.LISTEN_HOST)
+        ServerSocket(0, 1, loopback).use { occupied ->
+            val proxy = SocksProxyServer(
+                preferredPort = occupied.localPort,
+                maxConnections = 1,
+                allowPortFallback = false,
+            )
+            try {
+                val error = runCatching { proxy.start() }.exceptionOrNull()
+
+                assertTrue(error is java.net.BindException)
+            } finally {
+                proxy.close()
+            }
+        }
+    }
 }

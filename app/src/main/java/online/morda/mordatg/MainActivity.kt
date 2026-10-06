@@ -198,7 +198,11 @@ private fun MainScreen(
     var healthResult by remember { mutableStateOf<HealthCheckResult?>(null) }
     var morda by remember { mutableStateOf(MordaContent.FALLBACK) }
     var telegramPort by rememberSaveable { mutableStateOf(settings.telegramPort) }
-    val listenPort = if (snapshot.status == ProxyStatus.STOPPED) settings.listenPort else snapshot.listenPort
+    val listenPort = if (snapshot.status == ProxyStatus.STOPPED) {
+        settings.telegramPort.takeIf { it != 0 } ?: settings.listenPort
+    } else {
+        snapshot.listenPort
+    }
     val telegramNeedsUpdate = telegramPort != listenPort
 
     LaunchedEffect(settings.mordaEndpoint) {

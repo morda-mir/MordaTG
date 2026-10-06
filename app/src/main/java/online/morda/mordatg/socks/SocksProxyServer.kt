@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class SocksProxyServer(
     private val preferredPort: Int = ProxyConstants.DEFAULT_LISTEN_PORT,
     private val maxConnections: Int = ProxyConstants.MAX_CONNECTIONS,
+    private val allowPortFallback: Boolean = true,
 ) : Closeable {
     private val running = AtomicBoolean(false)
     private val sockets = Collections.synchronizedSet(mutableSetOf<Socket>())
@@ -57,7 +58,9 @@ class SocksProxyServer(
             return server.localPort
         } catch (error: BindException) {
             running.set(false)
-            ProxyRuntimeState.error("Нет свободного локального порта")
+            ProxyRuntimeState.error(
+                if (allowPortFallback) "Нет свободного локального порта" else "Порт $preferredPort занят",
+            )
             throw error
         } catch (error: Throwable) {
             running.set(false)
@@ -69,10 +72,15 @@ class SocksProxyServer(
     private fun bindFirstAvailablePort(): ServerSocket {
         var lastError: BindException? = null
         val loopback = InetAddress.getByName(ProxyConstants.LISTEN_HOST)
-        for (port in ProxyConstants.candidatePorts(preferredPort)) {
+        val ports = if (allowPortFallback) {
+            ProxyConstants.candidatePorts(preferredPort)
+        } else {
+            listOf(preferredPort)
+        }
+        for (port in ports) {
             val candidate = ServerSocket()
             try {
-                candidate.reuseAddress = false
+                candidate.reuseAddress = true
                 candidate.bind(java.net.InetSocketAddress(loopback, port), 32)
                 return candidate
             } catch (error: BindException) {
