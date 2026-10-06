@@ -1,0 +1,5 @@
+# Copy this file to release-signing.properties and keep the real file private.
+storeFile=C:/secure/location/mordatg-release.jks
+storePassword=replace-with-a-strong-password
+keyAlias=mordatg
+keyPassword=replace-with-a-strong-password

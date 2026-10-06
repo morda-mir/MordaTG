@@ -1,0 +1,10 @@
+{
+  "versionCode": 2,
+  "versionName": "0.2.0",
+  "apkUrl": "https://downloads.example.org/mordatg-0.2.0.apk",
+  "changelog": "Исправления стабильности и обновление маршрутов Telegram.",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "publishedAt": "2026-10-05T09:00:00Z",
+  "minimumSupportedVersion": 1
+}
+

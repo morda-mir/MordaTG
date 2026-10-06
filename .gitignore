@@ -1,0 +1,16 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+captures/
+release-signing.properties
+*.jks
+*.keystore
+*.apk
+*.aab
+.android-sdk/
+.impeccable/
+.secrets/
+release-assets/
+
