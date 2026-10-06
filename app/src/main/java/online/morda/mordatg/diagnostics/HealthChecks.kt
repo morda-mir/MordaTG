@@ -47,7 +47,9 @@ object HealthChecks {
     }
 
     private suspend fun checkUpstream(): Boolean = try {
-        UpstreamConnector(onReconnect = {}).connect(TelegramRoute(2)).use { }
+        listOf(2, 203).forEach { dc ->
+            UpstreamConnector(onReconnect = {}).connect(TelegramRoute(dc)).use { }
+        }
         true
     } catch (error: Throwable) {
         Log.w("MordaTG", "Telegram WSS health check failed", error)

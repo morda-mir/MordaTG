@@ -9,7 +9,9 @@ data class TelegramRoute(
     val media: Boolean = false,
 ) {
     val webSocketDomains: List<String>
-        get() = if (media) {
+        get() = if (dcId == 203) {
+            emptyList()
+        } else if (media) {
             listOf("kws$dcId-1.web.telegram.org", "kws$dcId.web.telegram.org")
         } else {
             listOf("kws$dcId.web.telegram.org", "kws$dcId-1.web.telegram.org")

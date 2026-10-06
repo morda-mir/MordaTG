@@ -75,7 +75,7 @@ jobs:
           VERSION_NAME=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
           SHA256=$(sha256sum release-assets/MordaTG.apk | cut -d' ' -f1)
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          CHANGELOG="${INPUT_CHANGELOG:-Первый выпуск.}"
+          CHANGELOG="${INPUT_CHANGELOG:-$(git log -1 --pretty=%s)}"
           MINIMUM=${INPUT_MINIMUM:-1}
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/MordaTG.apk"
           jq -n \
@@ -89,6 +89,7 @@ jobs:
             '{versionCode:$versionCode,versionName:$versionName,apkUrl:$apkUrl,changelog:$changelog,sha256:$sha256,publishedAt:$publishedAt,minimumSupportedVersion:$minimumSupportedVersion}' \
             > release-assets/update.json
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "changelog=$CHANGELOG" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -96,7 +97,7 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: MordaTG ${{ steps.release_meta.outputs.version_name }}
           generate_release_notes: false
-          body: ${{ inputs.changelog || 'Первый выпуск.' }}
+          body: ${{ steps.release_meta.outputs.changelog }}
           files: |
             release-assets/MordaTG.apk
             release-assets/update.json

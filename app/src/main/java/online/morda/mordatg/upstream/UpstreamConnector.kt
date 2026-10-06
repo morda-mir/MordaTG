@@ -16,17 +16,7 @@ class UpstreamConnector(
     )
 
     suspend fun connect(route: TelegramRoute): RawWebSocket {
-        val candidates = buildList {
-            if (route.dcId in 1..5) {
-                CF_PROXY_DOMAINS.forEach { base ->
-                    val domain = "kws${route.dcId}.$base"
-                    add(Endpoint(domain, domain, "/apiws"))
-                }
-            }
-            route.webSocketDomains.forEach { domain ->
-                add(Endpoint(directTargets[route.dcId] ?: domain, domain, "/apiws"))
-            }
-        }
+        val candidates = candidateEndpoints(route)
 
         var lastError: Throwable? = null
         val attempts = candidates.take(MAX_ENDPOINT_ATTEMPTS)
@@ -50,7 +40,19 @@ class UpstreamConnector(
         throw IOException("No Telegram WSS route is reachable", lastError)
     }
 
-    private data class Endpoint(val connectHost: String, val tlsHost: String, val path: String)
+    internal fun candidateEndpoints(route: TelegramRoute): List<Endpoint> = buildList {
+        if (route.dcId in 1..5 || route.dcId == 203) {
+            CF_PROXY_DOMAINS.forEach { base ->
+                val domain = "kws${route.dcId}.$base"
+                add(Endpoint(domain, domain, "/apiws"))
+            }
+        }
+        route.webSocketDomains.forEach { domain ->
+            add(Endpoint(directTargets[route.dcId] ?: domain, domain, "/apiws"))
+        }
+    }
+
+    internal data class Endpoint(val connectHost: String, val tlsHost: String, val path: String)
 
     companion object {
         private const val MAX_ENDPOINT_ATTEMPTS = 6
