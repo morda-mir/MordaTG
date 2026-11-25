@@ -12,6 +12,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
@@ -22,19 +23,19 @@ class WebSocketHandshakeException(
 ) : IOException(message)
 
 class RawWebSocket private constructor(
-    private val socket: SSLSocket,
+    private val socket: Socket,
     private val input: BufferedInputStream,
     private val output: BufferedOutputStream,
 ) : Closeable {
     private val writeLock = Any()
     private val random = SecureRandom()
-    @Volatile private var closed = false
+    private val closed = AtomicBoolean(false)
     private var fragments: ByteArray? = null
 
     fun sendBinary(payload: ByteArray) = sendFrame(OP_BINARY, payload)
 
     fun receiveBinary(): ByteArray? {
-        while (!closed) {
+        while (!closed.get()) {
             val first = readRequired()
             val second = readRequired()
             val fin = first and 0x80 != 0
@@ -80,12 +81,12 @@ class RawWebSocket private constructor(
     }
 
     private fun sendFrame(opcode: Int, payload: ByteArray) {
-        if (closed) throw IOException("WebSocket is closed")
+        if (closed.get()) throw IOException("WebSocket is closed")
         if (payload.size > ProxyConstants.MAX_WS_MESSAGE_BYTES) {
             throw IOException("WebSocket frame exceeds safety limit")
         }
         synchronized(writeLock) {
-            if (closed) throw IOException("WebSocket is closed")
+            if (closed.get()) throw IOException("WebSocket is closed")
             val mask = ByteArray(4).also(random::nextBytes)
             output.write(0x80 or opcode)
             when {
@@ -108,12 +109,7 @@ class RawWebSocket private constructor(
     }
 
     override fun close() {
-        if (closed) return
-        synchronized(writeLock) {
-            if (closed) return
-            closed = true
-            runCatching { socket.close() }
-        }
+        if (closed.compareAndSet(false, true)) runCatching { socket.close() }
     }
 
     private fun readRequired(): Int {
@@ -159,25 +155,33 @@ class RawWebSocket private constructor(
             tlsHost: String,
             path: String = "/apiws",
             connectTimeoutMs: Int = ProxyConstants.CONNECT_TIMEOUT_MS,
+            handshakeTimeoutMs: Int = 5_000,
+            secure: Boolean = true,
+            connectPort: Int = if (secure) 443 else 80,
         ): RawWebSocket {
             require(path.startsWith('/'))
             val raw = Socket()
             try {
                 raw.tcpNoDelay = true
                 raw.keepAlive = true
-                raw.connect(InetSocketAddress(connectHost, 443), connectTimeoutMs)
-                raw.soTimeout = ProxyConstants.READ_TIMEOUT_MS
+                raw.connect(InetSocketAddress(connectHost, connectPort), connectTimeoutMs)
+                raw.soTimeout = handshakeTimeoutMs
 
-                val context = SSLContext.getInstance("TLS").apply { init(null, null, null) }
-                val ssl = context.socketFactory.createSocket(raw, tlsHost, 443, true) as SSLSocket
-                ssl.sslParameters = ssl.sslParameters.apply {
-                    endpointIdentificationAlgorithm = "HTTPS"
-                    serverNames = listOf(SNIHostName(tlsHost))
+                val socket = if (secure) {
+                    val context = SSLContext.getInstance("TLS").apply { init(null, null, null) }
+                    (context.socketFactory.createSocket(raw, tlsHost, connectPort, true) as SSLSocket).apply {
+                        sslParameters = sslParameters.apply {
+                            endpointIdentificationAlgorithm = "HTTPS"
+                            serverNames = listOf(SNIHostName(tlsHost))
+                        }
+                        startHandshake()
+                    }
+                } else {
+                    raw
                 }
-                ssl.startHandshake()
 
-                val input = BufferedInputStream(ssl.inputStream, 64 * 1024)
-                val output = BufferedOutputStream(ssl.outputStream, 64 * 1024)
+                val input = BufferedInputStream(socket.inputStream, 64 * 1024)
+                val output = BufferedOutputStream(socket.outputStream, 64 * 1024)
                 val key = ByteArray(16).also(SecureRandom()::nextBytes)
                     .let { Base64.getEncoder().encodeToString(it) }
                 val request = buildString {
@@ -221,8 +225,8 @@ class RawWebSocket private constructor(
                 }
                 // Telegram connections may legitimately remain idle for long periods.
                 // Connect and handshake are bounded above; established streams block without polling.
-                ssl.soTimeout = 0
-                return RawWebSocket(ssl, input, output)
+                socket.soTimeout = 0
+                return RawWebSocket(socket, input, output)
             } catch (error: Throwable) {
                 runCatching { raw.close() }
                 throw error

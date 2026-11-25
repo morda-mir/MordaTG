@@ -10,7 +10,9 @@ class AppSettings(context: Context) {
 
     var desiredEnabled: Boolean
         get() = preferences.getBoolean(KEY_DESIRED_ENABLED, false)
-        set(value) = preferences.edit().putBoolean(KEY_DESIRED_ENABLED, value).apply()
+        set(value) {
+            preferences.edit().putBoolean(KEY_DESIRED_ENABLED, value).commit()
+        }
 
     var autoStart: Boolean
         get() = preferences.getBoolean(KEY_AUTO_START, false)
@@ -53,6 +55,16 @@ class AppSettings(context: Context) {
         get() = preferences.getLong(KEY_LAST_UPDATE_CHECK, 0L)
         set(value) = preferences.edit().putLong(KEY_LAST_UPDATE_CHECK, value).apply()
 
+    var lastUpdateAttemptEpochMillis: Long
+        get() = preferences.getLong(KEY_LAST_UPDATE_ATTEMPT, lastUpdateCheckEpochMillis)
+        set(value) {
+            preferences.edit().putLong(KEY_LAST_UPDATE_ATTEMPT, value).commit()
+        }
+
+    var cachedUpdateManifest: String
+        get() = preferences.getString(KEY_CACHED_UPDATE, "").orEmpty()
+        set(value) = preferences.edit().putString(KEY_CACHED_UPDATE, value).apply()
+
     var updateEndpoint: String
         get() = preferences.getString(KEY_UPDATE_ENDPOINT, BuildConfig.UPDATE_ENDPOINT).orEmpty()
         set(value) = preferences.edit().putString(KEY_UPDATE_ENDPOINT, value.trim()).apply()
@@ -68,6 +80,8 @@ class AppSettings(context: Context) {
         private const val KEY_TELEGRAM_PORT = "telegram_port"
         private const val KEY_PORT_CHANGE_FROM = "port_change_from"
         private const val KEY_LAST_UPDATE_CHECK = "last_update_check"
+        private const val KEY_LAST_UPDATE_ATTEMPT = "last_update_attempt"
+        private const val KEY_CACHED_UPDATE = "cached_update_manifest"
         private const val KEY_UPDATE_ENDPOINT = "update_endpoint"
         private const val KEY_MORDA_ENDPOINT = "morda_endpoint"
         private val PORT_LOCK = Any()

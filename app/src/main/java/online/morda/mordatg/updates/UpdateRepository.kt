@@ -2,6 +2,7 @@ package online.morda.mordatg.updates
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -26,7 +27,10 @@ class UpdateRepository(private val context: Context) {
         manifest
     }
 
-    suspend fun downloadAndVerify(manifest: UpdateManifest): File = runInterruptible(Dispatchers.IO) {
+    suspend fun downloadAndVerify(
+        manifest: UpdateManifest,
+        onProgress: (Int?) -> Unit = {},
+    ): File = runInterruptible(Dispatchers.IO) {
         val errors = manifest.validate()
         if (errors.isNotEmpty()) throw IOException(errors.joinToString("; "))
         val directory = File(context.cacheDir, "updates").apply { mkdirs() }
@@ -49,6 +53,7 @@ class UpdateRepository(private val context: Context) {
                         if (total > MAX_APK_BYTES) throw IOException("APK is larger than the safety limit")
                         digest.update(buffer, 0, count)
                         output.write(buffer, 0, count)
+                        onProgress(if (declaredLength > 0) ((total * 100) / declaredLength).toInt().coerceIn(0, 100) else null)
                     }
                 }
             }
@@ -62,10 +67,16 @@ class UpdateRepository(private val context: Context) {
             temporary.copyTo(destination, overwrite = true)
             temporary.delete()
         }
+        try {
+            verifyPackage(destination, manifest)
+        } catch (error: Exception) {
+            destination.delete()
+            throw error
+        }
         destination
     }
 
-    fun launchInstaller(apk: File): InstallResult {
+    fun installerIntent(apk: File): InstallResult {
         if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
             return InstallResult.PermissionRequired(
                 Intent(
@@ -75,17 +86,36 @@ class UpdateRepository(private val context: Context) {
             )
         }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", apk)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        @Suppress("DEPRECATION")
+        val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+            data = uri
+            putExtra(Intent.EXTRA_RETURN_RESULT, true)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(intent)
-        return InstallResult.Launched
+        return InstallResult.Ready(intent)
     }
 
     sealed interface InstallResult {
-        data object Launched : InstallResult
+        data class Ready(val intent: Intent) : InstallResult
         data class PermissionRequired(val intent: Intent) : InstallResult
+    }
+
+    @Suppress("DEPRECATION")
+    private fun verifyPackage(apk: File, manifest: UpdateManifest) {
+        val manager = context.packageManager
+        val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val candidate = manager.getPackageArchiveInfo(apk.absolutePath, flags)
+            ?: throw IOException("Invalid update APK")
+        val installed = manager.getPackageInfo(context.packageName, flags)
+        val version = if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode else candidate.versionCode.toLong()
+        if (candidate.packageName != context.packageName || version != manifest.versionCode.toLong() ||
+            version <= online.morda.mordatg.BuildConfig.VERSION_CODE
+        ) throw IOException("Unexpected update package or version")
+        val candidateSignatures = if (Build.VERSION.SDK_INT >= 28) candidate.signingInfo?.apkContentsSigners else candidate.signatures
+        val installedSignatures = if (Build.VERSION.SDK_INT >= 28) installed.signingInfo?.apkContentsSigners else installed.signatures
+        val candidateKeys = candidateSignatures.orEmpty().map { it.toCharsString() }.toSet()
+        val installedKeys = installedSignatures.orEmpty().map { it.toCharsString() }.toSet()
+        if (candidateKeys.isEmpty() || candidateKeys != installedKeys) throw IOException("Update signer does not match")
     }
 
     private fun getHttps(url: String, maximumBytes: Int): ByteArray {

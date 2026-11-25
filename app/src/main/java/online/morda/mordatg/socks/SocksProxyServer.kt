@@ -18,6 +18,7 @@ import online.morda.mordatg.upstream.MtProtoMessageSplitter
 import online.morda.mordatg.upstream.MtProtoObfuscation
 import online.morda.mordatg.upstream.RawWebSocket
 import online.morda.mordatg.upstream.TelegramDcResolver
+import online.morda.mordatg.upstream.TelegramRoute
 import online.morda.mordatg.upstream.UpstreamConnector
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -95,6 +96,7 @@ class SocksProxyServer(
     }
 
     fun resetUpstreams() {
+        UpstreamConnector.resetRoutes()
         val snapshot = synchronized(sockets) { sockets.toList() }
         snapshot.forEach { runCatching { it.close() } }
         if (snapshot.isNotEmpty()) ProxyRuntimeState.reconnect()
@@ -152,47 +154,50 @@ class SocksProxyServer(
         val input = BufferedInputStream(client.getInputStream(), 64 * 1024)
         val output = BufferedOutputStream(client.getOutputStream(), 64 * 1024)
         var requestRead = false
+        var replySent = false
         var upstream: RawWebSocket? = null
         try {
             Socks5Protocol.negotiate(input, output)
             val request = Socks5Protocol.readConnectRequest(input)
             requestRead = true
-            val route = TelegramDcResolver.resolve(request.host, request.port)
+            val requestedRoute = TelegramDcResolver.resolve(request.host, request.port)
                 ?: throw SocksProtocolException(
                     SocksReply.CONNECTION_NOT_ALLOWED,
                     "Разрешены только известные адреса Telegram",
                 )
 
-            val connector = UpstreamConnector(ProxyRuntimeState::reconnect)
-            upstream = connector.connect(route)
             Socks5Protocol.writeReply(
                 output,
                 SocksReply.SUCCEEDED,
                 client.localAddress,
                 client.localPort,
             )
+            replySent = true
             val initBytes = runInterruptible { input.readNBytesExact(MtProtoObfuscation.INIT_SIZE) }
             val init = MtProtoObfuscation.parseClientInit(initBytes)
                 ?: throw IOException("Unsupported Telegram MTProto transport")
+            val route = TelegramRoute(init.hintedDc ?: requestedRoute.dcId, media = init.media)
+            val connector = UpstreamConnector(ProxyRuntimeState::reconnect)
+            upstream = connector.connect(route)
             upstream.sendBinary(initBytes)
             ProxyRuntimeState.addSent(initBytes.size)
             ProxyRuntimeState.connected(route.dcId)
             client.soTimeout = 0
 
             val splitter = MtProtoMessageSplitter(init)
-            bridge(input, output, upstream, splitter)
+            bridge(client, input, output, upstream, splitter)
         } catch (error: SocksProtocolException) {
-            if (requestRead) runCatching { Socks5Protocol.writeReply(output, error.reply) }
+            if (requestRead && !replySent) runCatching { Socks5Protocol.writeReply(output, error.reply) }
         } catch (error: java.net.UnknownHostException) {
-            if (requestRead) runCatching { Socks5Protocol.writeReply(output, SocksReply.HOST_UNREACHABLE) }
+            if (requestRead && !replySent) runCatching { Socks5Protocol.writeReply(output, SocksReply.HOST_UNREACHABLE) }
         } catch (error: java.net.ConnectException) {
-            if (requestRead) runCatching { Socks5Protocol.writeReply(output, SocksReply.CONNECTION_REFUSED) }
+            if (requestRead && !replySent) runCatching { Socks5Protocol.writeReply(output, SocksReply.CONNECTION_REFUSED) }
         } catch (error: java.net.SocketTimeoutException) {
-            if (requestRead) runCatching { Socks5Protocol.writeReply(output, SocksReply.TTL_EXPIRED) }
+            if (requestRead && !replySent) runCatching { Socks5Protocol.writeReply(output, SocksReply.TTL_EXPIRED) }
         } catch (_: CancellationException) {
             throw CancellationException()
         } catch (_: Throwable) {
-            if (requestRead && upstream == null) {
+            if (requestRead && !replySent) {
                 runCatching { Socks5Protocol.writeReply(output, SocksReply.HOST_UNREACHABLE) }
             }
         } finally {
@@ -201,6 +206,7 @@ class SocksProxyServer(
     }
 
     private suspend fun bridge(
+        client: Socket,
         input: BufferedInputStream,
         output: BufferedOutputStream,
         upstream: RawWebSocket,
@@ -225,6 +231,7 @@ class SocksProxyServer(
                     ProxyRuntimeState.addSent(it.size)
                 }
             } finally {
+                runCatching { client.close() }
                 runCatching { upstream.close() }
             }
         }
@@ -237,6 +244,7 @@ class SocksProxyServer(
                     ProxyRuntimeState.addReceived(message.size)
                 }
             } finally {
+                runCatching { client.close() }
                 runCatching { upstream.close() }
             }
         }

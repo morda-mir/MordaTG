@@ -12,7 +12,7 @@ on:
         type: string
       changelog:
         description: "Visible release notes"
-        required: true
+        required: false
         type: string
       minimum_supported_version:
         description: "Minimum supported versionCode"
@@ -75,9 +75,9 @@ jobs:
           VERSION_NAME=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
           SHA256=$(sha256sum release-assets/MordaTG.apk | cut -d' ' -f1)
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          CHANGELOG="${INPUT_CHANGELOG:-$(git log -1 --pretty=%s)}"
+          CHANGELOG="${INPUT_CHANGELOG:-}"
           MINIMUM=${INPUT_MINIMUM:-1}
-          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/MordaTG.apk"
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION_NAME}/MordaTG.apk"
           jq -n \
             --argjson versionCode "$VERSION_CODE" \
             --arg versionName "$VERSION_NAME" \

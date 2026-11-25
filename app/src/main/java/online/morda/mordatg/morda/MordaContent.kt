@@ -24,7 +24,7 @@ data class MordaContent(
             title = "Нужен не только Telegram?",
             text = "VPN morda.online — спонсор прокси.",
             buttonLabel = "Открыть бота",
-            url = "https://t.me/morda_online_bot",
+            url = "https://t.me/morda_online_bot?start=mordatg",
         )
     }
 }

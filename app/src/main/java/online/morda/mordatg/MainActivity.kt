@@ -36,6 +36,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
@@ -46,6 +48,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -81,16 +84,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 import online.morda.mordatg.diagnostics.HealthCheckResult
 import online.morda.mordatg.diagnostics.HealthChecks
 import online.morda.mordatg.diagnostics.ProxyRuntimeState
@@ -101,17 +115,69 @@ import online.morda.mordatg.morda.MordaRepository
 import online.morda.mordatg.service.ProxyService
 import online.morda.mordatg.storage.AppSettings
 import online.morda.mordatg.ui.theme.MordaTheme
-import online.morda.mordatg.updates.UpdateManifest
 import online.morda.mordatg.updates.UpdateRepository
+import online.morda.mordatg.updates.AppUpdateManager
+import online.morda.mordatg.updates.AppUpdateState
 import java.io.File
 import java.time.Instant
 
 class MainActivity : ComponentActivity() {
+    private val updates get() = (application as MordaApplication).updates
+    private var pendingInstallPath: String? = null
+    private val installerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        pendingInstallPath = null
+        updates.installerFinished()
+    }
+    private val installPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val path = pendingInstallPath
+        if (path != null && packageManager.canRequestPackageInstalls()) {
+            openInstaller(File(path))
+        } else {
+            pendingInstallPath = null
+            updates.installerFinished("Разреши установку обновлений")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingInstallPath = savedInstanceState?.getString("pending_update_path")
         enableEdgeToEdge()
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                updates.state.map { it.readyApk }.distinctUntilChanged().filterNotNull().collect {
+                    updates.takeReadyApk()?.let { path -> openInstaller(File(path)) }
+                }
+            }
+        }
         setContent {
             MordaTheme { MordaTgApp() }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (AppSettings(this).desiredEnabled && ProxyRuntimeState.state.value.status == ProxyStatus.STOPPED) {
+            runCatching { ProxyService.start(this) }
+        }
+        lifecycleScope.launch { updates.check() }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("pending_update_path", pendingInstallPath)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun openInstaller(apk: File) {
+        try {
+            if (!apk.isFile) throw java.io.IOException("Update file is missing")
+            pendingInstallPath = apk.absolutePath
+            when (val result = UpdateRepository(this).installerIntent(apk)) {
+                is UpdateRepository.InstallResult.PermissionRequired -> installPermissionLauncher.launch(result.intent)
+                is UpdateRepository.InstallResult.Ready -> installerLauncher.launch(result.intent)
+            }
+        } catch (_: Exception) {
+            pendingInstallPath = null
+            updates.installerFinished("Не удалось открыть установку")
         }
     }
 }
@@ -121,28 +187,51 @@ private enum class AppScreen { MAIN, UPDATES, BACKGROUND_HELP }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MordaTgApp() {
+    AppWallpaper { MordaAppContent() }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MordaAppContent() {
     val context = LocalContext.current
     val snapshot by ProxyRuntimeState.state.collectAsStateWithLifecycle()
     val settings = remember { AppSettings(context) }
     val snackbar = remember { SnackbarHostState() }
+    val updates = remember { (context.applicationContext as MordaApplication).updates }
+    val updateState by updates.state.collectAsStateWithLifecycle()
     var screen by rememberSaveable { mutableStateOf(AppScreen.MAIN) }
     var menuOpen by remember { mutableStateOf(false) }
     BackHandler(enabled = screen != AppScreen.MAIN) { screen = AppScreen.MAIN }
+    LaunchedEffect(updateState.message) {
+        updateState.message?.let { message ->
+            snackbar.showSnackbar(message)
+            updates.clearMessage()
+        }
+    }
 
     Scaffold(
+        containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        when (screen) {
-                            AppScreen.MAIN -> "MordaTG"
-                            AppScreen.UPDATES -> "Обновления"
-                            AppScreen.BACKGROUND_HELP -> "Фоновая работа"
-                        },
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            when (screen) {
+                                AppScreen.MAIN -> "MordaTG"
+                                AppScreen.UPDATES -> "Обновления"
+                                AppScreen.BACKGROUND_HELP -> "Фоновая работа"
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                        if (screen == AppScreen.MAIN && updateState.available) {
+                            Spacer(Modifier.width(10.dp))
+                            NeonUpdateButton(updateState, updates::download)
+                        }
+                    }
                 },
                 navigationIcon = {
                     if (screen != AppScreen.MAIN) {
@@ -171,16 +260,49 @@ private fun MordaTgApp() {
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
                 ),
             )
         },
     ) { padding ->
         when (screen) {
             AppScreen.MAIN -> MainScreen(snapshot, settings, snackbar, padding)
-            AppScreen.UPDATES -> UpdateScreen(settings, snackbar, padding)
+            AppScreen.UPDATES -> UpdateScreen(updates, updateState, padding)
             AppScreen.BACKGROUND_HELP -> BackgroundHelpScreen(padding)
         }
+    }
+}
+
+@Composable
+private fun NeonUpdateButton(state: AppUpdateState, onClick: () -> Unit) {
+    val color = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFF82FFF0) else Color(0xFF00665B)
+    TextButton(enabled = !state.busy, onClick = onClick) {
+        Text(
+            when {
+                state.downloading -> state.progress?.let { "$it%" } ?: "Загрузка…"
+                state.installing -> "Установка…"
+                else -> "Обновить"
+            },
+            color = color,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.4.sp,
+            style = MaterialTheme.typography.labelLarge.copy(shadow = Shadow(color.copy(alpha = 0.65f), blurRadius = 10f)),
+        )
+    }
+}
+
+@Composable
+private fun AppWallpaper(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Image(
+            painter = painterResource(R.drawable.app_wallpaper),
+            contentDescription = null,
+            modifier = Modifier.matchParentSize(),
+            contentScale = ContentScale.Crop,
+            alpha = 0.3f,
+        )
+        content()
     }
 }
 
@@ -203,7 +325,6 @@ private fun MainScreen(
     } else {
         snapshot.listenPort
     }
-    val telegramNeedsUpdate = telegramPort != listenPort
 
     LaunchedEffect(settings.mordaEndpoint) {
         morda = runCatching { MordaRepository().fetch(settings.mordaEndpoint) }
@@ -274,7 +395,8 @@ private fun MainScreen(
         StatusField(snapshot = snapshot, onToggle = ::toggleProxy)
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surfaceContainer,
+            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.5f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
         ) {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
@@ -287,12 +409,8 @@ private fun MainScreen(
                         scope.launch { snackbar.showSnackbar("Адрес и порт скопированы") }
                     },
                     onOpenTelegram = {
-                        val opened = if (telegramNeedsUpdate) {
-                            openTelegramProxy(context, listenPort)
-                        } else {
-                            openTelegram(context)
-                        }
-                        if (opened && telegramNeedsUpdate) {
+                        val opened = openTelegramProxy(context, listenPort)
+                        if (opened) {
                             telegramPort = listenPort
                             settings.telegramPort = listenPort
                             settings.pendingPortChangeFrom = 0
@@ -360,35 +478,51 @@ private fun StatusField(snapshot: ProxySnapshot, onToggle: () -> Unit) {
     val container = if (snapshot.status == ProxyStatus.ERROR) {
         MaterialTheme.colorScheme.errorContainer
     } else {
-        MaterialTheme.colorScheme.primaryContainer
+        Color.Transparent
     }
     val content = if (snapshot.status == ProxyStatus.ERROR) {
         MaterialTheme.colorScheme.onErrorContainer
     } else {
-        MaterialTheme.colorScheme.onPrimaryContainer
+        MaterialTheme.colorScheme.onSurface
     }
 
     Surface(color = container, contentColor = content) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 28.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            description?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = snapshot.status != ProxyStatus.STARTING,
-                onClick = onToggle,
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Image(
+                painter = painterResource(R.drawable.header_face),
+                contentDescription = null,
+                modifier = Modifier.matchParentSize(),
+                contentScale = ContentScale.Fit,
+                alpha = 0.12f,
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(
-                    if (snapshot.isRunning()) Icons.Default.Stop else Icons.Default.PlayArrow,
-                    contentDescription = null,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(if (snapshot.isRunning()) "Остановить" else "Включить")
+                Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                description?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = snapshot.status != ProxyStatus.STARTING,
+                    onClick = onToggle,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = content.copy(alpha = 0.12f),
+                        contentColor = content,
+                        disabledContainerColor = content.copy(alpha = 0.06f),
+                        disabledContentColor = content.copy(alpha = 0.5f),
+                    ),
+                    border = BorderStroke(1.dp, content.copy(alpha = 0.28f)),
+                ) {
+                    Icon(
+                        if (snapshot.isRunning()) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (snapshot.isRunning()) "Остановить" else "Включить")
+                }
             }
         }
     }
@@ -419,12 +553,18 @@ private fun TelegramSetupRow(
             IconButton(onClick = onCopy) {
                 Icon(Icons.Default.ContentCopy, contentDescription = "Копировать параметры")
             }
-            Button(enabled = enabled, onClick = onOpenTelegram) {
+            OutlinedButton(
+                enabled = enabled,
+                onClick = onOpenTelegram,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+            ) {
                 Text(
                     when {
-                        configuredPort == 0 -> "Подключить"
-                        needsUpdate -> "Обновить"
-                        else -> "Открыть"
+                        configuredPort > 0 && needsUpdate -> "Обновить"
+                        else -> "Подключить"
                     },
                 )
             }
@@ -522,25 +662,8 @@ private fun MordaRow(content: MordaContent, onClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UpdateScreen(settings: AppSettings, snackbar: SnackbarHostState, padding: PaddingValues) {
-    val context = LocalContext.current
+private fun UpdateScreen(updates: AppUpdateManager, state: AppUpdateState, padding: PaddingValues) {
     val scope = rememberCoroutineScope()
-    val repository = remember { UpdateRepository(context) }
-    var manifest by remember { mutableStateOf<UpdateManifest?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf<String?>(null) }
-    var pendingInstallPath by rememberSaveable { mutableStateOf<String?>(null) }
-    val installPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) {
-        pendingInstallPath?.let { path ->
-            val apk = File(path)
-            if (apk.isFile && repository.launchInstaller(apk) == UpdateRepository.InstallResult.Launched) {
-                pendingInstallPath = null
-            }
-        }
-    }
-    val endpoint = settings.updateEndpoint
 
     Column(
         modifier = Modifier
@@ -550,67 +673,27 @@ private fun UpdateScreen(settings: AppSettings, snackbar: SnackbarHostState, pad
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        if (endpoint.isBlank()) {
-            Text("Обновления пока недоступны", style = MaterialTheme.typography.bodyLarge)
+        Button(
+            enabled = !state.busy && !state.checking,
+            onClick = { scope.launch { updates.check(force = true) } },
+        ) {
+            if (state.checking) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Default.Refresh, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Проверить обновления")
         }
-        if (endpoint.isNotBlank()) {
-            Button(
-                enabled = !busy,
-                onClick = {
-                    busy = true
-                    status = null
-                    scope.launch {
-                        runCatching { repository.fetchManifest(endpoint) }
-                            .onSuccess {
-                                manifest = it
-                                settings.lastUpdateCheckEpochMillis = System.currentTimeMillis()
-                                status = if (it.versionCode > BuildConfig.VERSION_CODE) {
-                                    "Доступна версия ${it.versionName}"
-                                } else {
-                                    "Установлена актуальная версия"
-                                }
-                            }
-                            .onFailure { status = "Не удалось проверить обновления: ${it.message.orEmpty().take(160)}" }
-                        busy = false
-                    }
-                },
-            ) {
-                if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                else Icon(Icons.Default.Refresh, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Проверить обновления")
-            }
-        }
-        status?.let {
-            Text(it, color = if (it.startsWith("Не удалось")) MaterialTheme.colorScheme.error else Color.Unspecified)
-        }
-        manifest?.let { update ->
+        state.manifest?.let { update ->
+            Text(if (state.available) "Доступна версия ${update.versionName}" else "Установлена актуальная версия")
             Card {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Версия ${update.versionName}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text("Опубликована: ${formatPublishedAt(update.publishedAt)}")
                     Text(update.changelog)
-                    if (update.versionCode > BuildConfig.VERSION_CODE) {
+                    if (state.available) {
                         Button(
-                            enabled = !busy,
-                            onClick = {
-                                busy = true
-                                scope.launch {
-                                    runCatching { repository.downloadAndVerify(update) }
-                                        .onSuccess { apk ->
-                                            when (val result = repository.launchInstaller(apk)) {
-                                                UpdateRepository.InstallResult.Launched -> Unit
-                                                is UpdateRepository.InstallResult.PermissionRequired -> {
-                                                    pendingInstallPath = apk.absolutePath
-                                                    installPermissionLauncher.launch(result.intent)
-                                                }
-                                            }
-                                        }
-                                        .onFailure { snackbar.showSnackbar("Загрузка не удалась: ${it.message.orEmpty().take(140)}") }
-                                    busy = false
-                                }
-                            },
-                        ) { Text("Установить обновление") }
+                            enabled = !state.busy,
+                            onClick = updates::download,
+                        ) { Text(if (state.downloading) "Загрузка…" else "Установить обновление") }
                     }
                 }
             }
@@ -686,21 +769,6 @@ private fun openTelegramProxy(context: Context, port: Int): Boolean {
     return openPreferred(context, tg, web)
 }
 
-private fun openTelegram(context: Context): Boolean {
-    val packages = listOf("org.telegram.messenger", "org.telegram.messenger.web", "org.thunderdog.challegram")
-    val launchIntent = packages.firstNotNullOfOrNull(context.packageManager::getLaunchIntentForPackage)
-    return try {
-        if (launchIntent != null) {
-            context.startActivity(launchIntent)
-        } else {
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("tg://resolve?domain=morda_online_bot")))
-        }
-        true
-    } catch (_: Exception) {
-        false
-    }
-}
-
 private fun openNotificationSettings(context: Context) {
     runCatching {
         context.startActivity(
@@ -717,28 +785,36 @@ private fun canRunInBackground(context: Context): Boolean {
 }
 
 private fun openMorda(context: Context, url: String) {
-    val web = Uri.parse(url)
+    var web = Uri.parse(url)
     val telegramUsername = web.pathSegments.firstOrNull()
         ?.takeIf { web.host.equals("t.me", ignoreCase = true) && it.matches(Regex("[A-Za-z0-9_]{5,32}")) }
     if (telegramUsername != null) {
-        openPreferred(context, Uri.parse("tg://resolve?domain=$telegramUsername"), web)
+        val start = web.getQueryParameter("start")?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,64}")) }
+            ?: "mordatg".takeIf { telegramUsername.equals("morda_online_bot", ignoreCase = true) }
+        val telegram = Uri.Builder().scheme("tg").authority("resolve")
+            .appendQueryParameter("domain", telegramUsername)
+        if (start != null) {
+            telegram.appendQueryParameter("start", start)
+            if (web.getQueryParameter("start") == null) web = web.buildUpon().appendQueryParameter("start", start).build()
+        }
+        openPreferred(context, telegram.build(), web)
     } else {
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, web)) }
     }
 }
 
 private fun openPreferred(context: Context, preferred: Uri, fallback: Uri): Boolean {
-    val preferredIntent = Intent(Intent.ACTION_VIEW, preferred)
-    return try {
-        if (preferredIntent.resolveActivity(context.packageManager) != null) {
-            context.startActivity(preferredIntent)
-        } else {
-            context.startActivity(Intent(Intent.ACTION_VIEW, fallback))
+    for (uri in listOf(preferred, fallback)) {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+            return true
+        } catch (_: android.content.ActivityNotFoundException) {
+            // Try the public HTTPS link if no installed client handles tg://.
+        } catch (_: SecurityException) {
+            // Some vendor firmware restricts a handler; let Android resolve the fallback.
         }
-        true
-    } catch (_: Exception) {
-        false
     }
+    return false
 }
 
 private fun manufacturerGuidance(value: String): String = when (value.lowercase()) {

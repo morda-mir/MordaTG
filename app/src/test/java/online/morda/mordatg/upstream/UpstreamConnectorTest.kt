@@ -14,9 +14,11 @@ class UpstreamConnectorTest {
         assertTrue(endpoints.isNotEmpty())
         assertTrue(endpoints.all { it.tlsHost.startsWith("kws203.") })
         assertFalse(endpoints.any { it.tlsHost.endsWith(".web.telegram.org") })
-        assertEquals(20, endpoints.size)
+        assertEquals(40, endpoints.size)
         assertEquals("kws203.offshor.co.uk", endpoints.first().tlsHost)
-        assertEquals("kws203.cakeisalie.co.uk", endpoints[1].tlsHost)
+        assertEquals("kws203.cakeisalie.co.uk", endpoints[2].tlsHost)
+        assertTrue(endpoints[0].secure)
+        assertFalse(endpoints[1].secure)
     }
 
     @Test
@@ -24,7 +26,7 @@ class UpstreamConnectorTest {
         val endpoints = UpstreamConnector(onReconnect = {}).candidateEndpoints(TelegramRoute(dcId = 2))
 
         assertEquals("kws2.offshor.co.uk", endpoints.first().tlsHost)
-        assertEquals("kws2.cakeisalie.co.uk", endpoints[1].tlsHost)
+        assertEquals("kws2.cakeisalie.co.uk", endpoints[2].tlsHost)
         assertTrue(endpoints.any { it.tlsHost == "kws2.web.telegram.org" })
     }
 }

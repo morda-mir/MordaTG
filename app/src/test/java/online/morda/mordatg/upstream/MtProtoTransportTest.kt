@@ -26,6 +26,14 @@ class MtProtoTransportTest {
     }
 
     @Test
+    fun `negative dc hint identifies a media connection`() {
+        val parsed = MtProtoObfuscation.parseClientInit(makeInit(MtProtoTransport.INTERMEDIATE, -203))
+
+        assertEquals(203, parsed?.hintedDc)
+        assertEquals(true, parsed?.media)
+    }
+
+    @Test
     fun `splitter preserves encrypted packet boundaries`() {
         val initBytes = makeInit(MtProtoTransport.INTERMEDIATE, 2)
         val parsed = MtProtoObfuscation.parseClientInit(initBytes)!!
@@ -47,7 +55,7 @@ class MtProtoTransportTest {
         init[0] = 1
         val cipher = streamCipher(init)
         val encryptedFull = cipher.update(init.copyOf())
-        val plainTail = transport.tag + byteArrayOf(dc.toByte(), 0, 0, 0)
+        val plainTail = transport.tag + byteArrayOf(dc.toByte(), (dc shr 8).toByte(), 0, 0)
         for (index in 56 until 64) {
             val keyStream = encryptedFull[index].toInt() xor init[index].toInt()
             init[index] = (plainTail[index - 56].toInt() xor keyStream).toByte()

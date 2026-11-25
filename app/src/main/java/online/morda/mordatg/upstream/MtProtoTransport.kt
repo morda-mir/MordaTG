@@ -18,6 +18,7 @@ data class MtProtoInit(
     val transport: MtProtoTransport,
     val hintedDc: Int?,
     internal val decryptor: Cipher,
+    val media: Boolean = false,
 )
 
 object MtProtoObfuscation {
@@ -34,7 +35,7 @@ object MtProtoObfuscation {
         val transport = MtProtoTransport.entries.firstOrNull { it.tag.contentEquals(tag) } ?: return null
         val dcRaw = ByteBuffer.wrap(plain, 60, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
         val hintedDc = kotlin.math.abs(dcRaw).takeIf { it in 1..5 || it == 203 }
-        return MtProtoInit(transport, hintedDc, cipher)
+        return MtProtoInit(transport, hintedDc, cipher, media = dcRaw < 0 && hintedDc != null)
     }
 }
 
